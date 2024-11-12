@@ -118,15 +118,22 @@ class Board:
                     self.DFS_colour(x_n, y_n, colour)
 
     def print_board(self) -> str:
-        """Returns the string representation of a board."""
-
+        """Returns the string representation of a board with color-coded text."""
+        
         output = ""
         leading_spaces = ""
         for line in self._tiles:
             output += leading_spaces
             leading_spaces += " "
             for tile in line:
-                output += Colour.get_char(tile.colour) + " "
+                # Apply color based on player
+                colour = Colour.get_char(tile.colour)
+                if colour == "R":
+                    output += "\033[91mR\033[0m "  # Red for player1
+                elif colour == "B":
+                    output += "\033[94mB\033[0m "  # Blue for player2
+                else:
+                    output += "X "  # Default color for other tiles
             output += "\n"
 
         return output

@@ -46,7 +46,7 @@ class SamNaive(AgentBase):
         if opp_move:
             self._choices.remove((opp_move.x, opp_move.y))
 
-        if False:
+        if turn == 2:
             return Move(-1, -1)
         else:
             x, y = choice(self._choices)

@@ -1,1 +1,1 @@
-agents.Group999.NaiveAgent NaiveAgent
+agents.DefaultAgents.ExternalAgent ExternalAgent

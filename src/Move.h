@@ -13,8 +13,11 @@ public:
     explicit Move(int x = -1, int y = -1);
 
     // Getters
-    int getX() const;
-    int getY() const;
+    int getX() const { return _x; }
+    int getY() const { return _y; }
+
+    // Define equality operator
+    bool operator==(const Move& other) const;
 
     // Returns a string representation of the move
     std::string toString() const;

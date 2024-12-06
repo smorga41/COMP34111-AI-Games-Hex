@@ -9,7 +9,7 @@
 
 class AgentBase {
 protected:
-    Colour _colour; // Colour of the agent
+    Colour _colour; 
 
 public:
     // Constructor

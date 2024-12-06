@@ -1,10 +1,10 @@
 #ifndef SAMNAIVE_H
 #define SAMNAIVE_H
 
-#include "../src/AgentBase.h"
-#include "../src/Move.h"
-#include "../src/Board.h"
-#include "../src/Colour.h"
+#include "../../src/AgentBase.h"  
+#include "../../src/Move.h"      
+#include "../../src/Board.h"    
+#include "../../src/Colour.h"
 #include <vector>
 #include <utility>
 #include <random>

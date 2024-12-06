@@ -13,6 +13,20 @@ Board::Board(int boardSize) : _size(boardSize), _winner(static_cast<Colour>(-1))
     }
 }
 
+Board Board::clone() const {
+    Board newBoard(_size); 
+    newBoard._winner = _winner; 
+
+    // Deep copy of tiles
+    for (int i = 0; i < _size; ++i) {
+        for (int j = 0; j < _size; ++j) {
+            newBoard._tiles[i][j] = _tiles[i][j]; 
+        }
+    }
+
+    return newBoard;
+}
+
 // Create a board from a string representation
 Board Board::fromString(const std::string& stringInput, int boardSize) {
     Board board(boardSize);

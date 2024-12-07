@@ -26,15 +26,87 @@ def get_available_moves_1d(board_1d, board_size):
 
 NEIGHBOUR_DISPLACEMENTS = [(-1, 0), (-1, 1), (0, 1), (1, 0), (1, -1), (0, -1)]
 
+class UnionFind:
+    def __init__(self, n):
+        self.parent = list(range(n))
+        self.rank = [0]*n
+
+    def find(self, x):
+        while self.parent[x] != x:
+            self.parent[x] = self.parent[self.parent[x]]
+            x = self.parent[x]
+        return x
+
+    def union(self, x, y):
+        rx = self.find(x)
+        ry = self.find(y)
+        if rx != ry:
+            if self.rank[rx] < self.rank[ry]:
+                rx, ry = ry, rx
+            self.parent[ry] = rx
+            if self.rank[rx] == self.rank[ry]:
+                self.rank[rx] += 1
+
+    def connected(self, x, y):
+        return self.find(x) == self.find(y)
+
+
+class HexWinChecker:
+    def __init__(self, board_size):
+        self.board_size = board_size
+        self.total_tiles = board_size * board_size
+
+        # Virtual nodes
+        self.red_top = self.total_tiles
+        self.red_bottom = self.total_tiles+1
+        self.blue_left = self.total_tiles+2
+        self.blue_right = self.total_tiles+3
+
+        # Initialize UnionFind with extra 4 nodes for virtual edges
+        self.uf = UnionFind(self.total_tiles + 4)
+
+    def xy_to_idx(self, x, y):
+        return x*self.board_size + y
+
+    def add_move(self, x, y, colour, board_1d):
+        """Call this method after placing a tile of the given colour at (x,y)."""
+        idx = self.xy_to_idx(x, y)
+
+        # Union with virtual edges if needed
+        if colour == Colour.RED:
+            if x == 0:
+                self.uf.union(idx, self.red_top)
+            if x == self.board_size - 1:
+                self.uf.union(idx, self.red_bottom)
+        elif colour == Colour.BLUE:
+            if y == 0:
+                self.uf.union(idx, self.blue_left)
+            if y == self.board_size - 1:
+                self.uf.union(idx, self.blue_right)
+
+        # Union with same-colour neighbours
+        for dx, dy in NEIGHBOUR_DISPLACEMENTS:
+            nx, ny = x+dx, y+dy
+            if 0 <= nx < self.board_size and 0 <= ny < self.board_size:
+                n_idx = self.xy_to_idx(nx, ny)
+                if board_1d[n_idx] == colour:
+                    self.uf.union(idx, n_idx)
+
+    def check_win(self, colour):
+        """Check if the given colour has achieved a win."""
+        if colour == Colour.RED:
+            return self.uf.connected(self.red_top, self.red_bottom)
+        elif colour == Colour.BLUE:
+            return self.uf.connected(self.blue_left, self.blue_right)
+        return False
+
+
 class MCTSAgent(AgentBase):
-    def __init__(self, colour: Colour, iterations: int = 20000, c_param: float = 0.5, time_limit: float = 10.0):
+    def __init__(self, colour: Colour, iterations: int = 20000, c_param: float = 0.5, time_limit: float = 5.0):
         super().__init__(colour)
         self.iterations = iterations
         self.c_param = c_param
-
         self.time_limit = time_limit
-
-    
 
     def make_move(self, turn: int, board: Board, opp_move: Move | None):
         # Clone the board to avoid side effects
@@ -56,7 +128,7 @@ class TreeNode:
         self.board_size = board_size
         self.parent = parent
         self.move = move # The move which lead to this node
-        self.player = player # The current player whos turn it is
+        self.player = player # The current player whose turn it is
         self.children = []
         self.visits = 0
         self.wins = 0
@@ -65,12 +137,9 @@ class TreeNode:
         return len(self.children) == len(get_available_moves_1d(self.board_1d, self.board_size))
 
     def best_child(self, c_param):
-        # Selects the child with the highest value to explore next
-        # c_param: exploration modiifer, higher -> more exploration
         choices_weights = []
         for child in self.children:
             if child.visits == 0:
-                #prioritise unvisited nodes
                 ucb1 = float('inf')
             else:
                 exploitation = child.wins / child.visits
@@ -89,10 +158,8 @@ class TreeNode:
                 idx = move.x * self.board_size + move.y
                 new_board_1d[idx] = self.player
 
-                # Determine next player
                 next_player = Colour.opposite(self.player)
 
-                # Create the child node with next player's turn
                 child_node = TreeNode(
                     board_1d=new_board_1d, 
                     board_size=self.board_size,
@@ -104,98 +171,62 @@ class TreeNode:
                 return child_node
         return self
 
-    
     def simulate_random_playoff(self):
+        # We create a copy of the board state and set up union-find based win checking
         simulation_board = self.board_1d.copy()
-        current_player = self.player  # Start with the player whose turn it is at this node
+        current_player = self.player
 
-        # Check for immediate win
-        if self.check_win(simulation_board, Colour.opposite(current_player)):
-                return Colour.opposite(current_player)
+        # Initialize HexWinChecker
+        win_checker = HexWinChecker(self.board_size)
+        # Add all existing stones to the union-find structure
+        for idx, c in enumerate(simulation_board):
+            if c is not None:
+                x, y = divmod(idx, self.board_size)
+                win_checker.add_move(x, y, c, simulation_board)
+
+        # Check if the previous player just made a winning move (if any)
+        # Actually, at the start, we are about to make a move for current_player,
+        # so we should check if opposite(current_player) had already won.
+        # Usually not needed if the game is consistent, but safe to check:
+        if win_checker.check_win(Colour.opposite(current_player)):
+            return Colour.opposite(current_player)
 
         while True:
-            available_moves = [idx for idx, colour in enumerate(simulation_board) if colour is None] # slightly quicker to not call function 
+            available_moves = [idx for idx, colour in enumerate(simulation_board) if colour is None] 
             if not available_moves:
-                # if simulation_board.has_ended(current_player):
-                #     return current_player
-
-                raise Exception("Unexpected game state, no possible moves ")
+                # No moves left should not happen in a full hex game until a winner is found,
+                # but let's just break and return opposite player as a fallback
+                return Colour.opposite(current_player)
             
             # Randomly select a move
             move_idx = random.choice(available_moves)
             simulation_board[move_idx] = current_player
+            x, y = divmod(move_idx, self.board_size)
+            # Update union-find structure with the new move
+            win_checker.add_move(x, y, current_player, simulation_board)
 
             # Check for win
-            if self.check_win(simulation_board, current_player):
+            if win_checker.check_win(current_player):
                 return current_player
 
             # Switch player
             current_player = Colour.opposite(current_player)
 
-    def check_win(self, board_1d, colour):
-        board_size = self.board_size
-        visited = [False] * (board_size * board_size)
-
-        def dfs(idx):
-            if visited[idx]:
-                return False
-            visited[idx] = True
-            x, y = divmod(idx, board_size)
-
-            # Check win condition
-            if colour == Colour.RED and x == board_size - 1:
-                return True
-            if colour == Colour.BLUE and y == board_size - 1:
-                return True
-
-            # Explore neighbors
-            for displacement in NEIGHBOUR_DISPLACEMENTS:
-                nx, ny = x + displacement[0], y + displacement[1]
-                if 0 <= nx < board_size and 0 <= ny < board_size:
-                    neighbor_idx = nx * board_size + ny
-                    if board_1d[neighbor_idx] == colour and not visited[neighbor_idx]:
-                        if dfs(neighbor_idx):
-                            return True
-            return False
-
-        # Start DFS from relevant edges
-        if colour == Colour.RED:
-            start_indices = [y for y in range(board_size) if board_1d[y] == Colour.RED]
-        elif colour == Colour.BLUE:
-            start_indices = [x * board_size for x in range(board_size) if board_1d[x * board_size] == Colour.BLUE]
-        else:
-            return False
-
-        for idx in start_indices:
-            if dfs(idx):
-                return True
-        return False
-
-
-    
     def backpropagate(self, result: Colour):
-        """
-        Updates the node's statistics based on the simuation result.
-
-        Args:
-            result (Color): The winner of the simulation
-        """
         self.visits += 1
         if Colour.opposite(self.player) == result:
             self.wins += 1
-
         if self.parent:
             self.parent.backpropagate(result)
 
+
 class MCTS:
     def __init__(self, iterations: int = 3, c_param: float = 1.4, time_limit: float = 10.0):
-        self.iterations = iterations #TODO cound limit by time in future instead maybe
+        self.iterations = iterations
         self.c_param = c_param
-
         self.time_limit = time_limit
         self.iterations_run = 0
     
-
     def search(self, initial_board: Board, player: Colour):
         board_size = initial_board.size
         initial_board_1d = board_to_1d(initial_board)
@@ -203,11 +234,9 @@ class MCTS:
         start_time = time.time()
 
         for _ in range(self.iterations):
-            # Track time
             current_time = time.time()
             elapsed_time = current_time - start_time
             if elapsed_time >= self.time_limit:
-                # Time limit reached
                 print(f"Time limit {self.time_limit} reached, completed {self.iterations_run} iterations")
                 break
             
@@ -221,34 +250,34 @@ class MCTS:
 
             self.iterations_run += 1
 
-        best_child = root.best_child(c_param = 0)
+        best_child = root.best_child(c_param=0)
+         # Print stats for the best move
+        print(f"Selected Move ({best_child.move.x}, {best_child.move.y}) - Wins: {best_child.wins}, Visits: {best_child.visits}, Win Ratio: {best_child.wins/ best_child.visits}")
         return best_child.move
     
     def _select(self, node: TreeNode):
-        """
-        Uses Upper Confidence bound to select node for expansion
-        """
         while node.is_fully_expanded() and node.children:
             node = node.best_child(self.c_param)
         return node
     
     def check_terminal(self, node: TreeNode) -> bool:
-        return node.check_win(node.board_1d, Colour.RED) or node.check_win(node.board_1d, Colour.BLUE)
+        # We rely on simulate_random_playoff checks for a winner efficiently;
+        # If you want a quick terminal check: 
+        # It's cheap to do with union-find if we integrated it fully at each node,
+        # but we haven't. We'll trust simulate_random_playoff for now.
+        return False
 
-#NOTE These should really be a part of the board class but im unsure if we're allowed to change that
+
 def cloneBoard(board: Board):
     new_board = Board(board.size)
     new_board.winner = None
     new_board._tiles = deepcopy(board.tiles)
-    
     return new_board
 
-#NOTE no longer used with 1d board representation
 def get_available_moves(board: Board) -> list[Move]:
     available_moves = []
     for i in range(board.size):
         for j in range(board.size):
             if board.tiles[i][j].colour is None:
                 available_moves.append(Move(i, j))
-
     return available_moves

@@ -294,10 +294,12 @@ class TreeNode:
             self.parent.backpropagate(result)
 
 class MCTS:
-    def __init__(self, c_param: float = 0.5, time_limit: float = 5.0):
+    def __init__(self, iterations: int = 200000, c_param: float = 0.5, time_limit: float = 5.0, confidence_margin: float = 0.05):
+        self.iterations = iterations
         self.c_param = c_param
         self.time_limit = time_limit
         self.iterations_run = 0
+        self.confidence_margin = confidence_margin
 
         # Warm-up calls to compile Numba functions
         dummy_board = np.full(1, EMPTY, dtype=np.int32)
@@ -326,6 +328,17 @@ class MCTS:
                 node.backpropagate(result)
 
             self.iterations_run += 1
+
+            # every 10,000 iterations check if an obvious best move has been found
+            if len(root.children) >= 2 and self.iterations_run % 10000 == 0:
+                # Get win rates of the top two moves
+                sorted_children = sorted(root.children, key=lambda c: c.wins / c.visits if c.visits > 0 else 0, reverse=True)
+                best_win_rate = sorted_children[0].wins / sorted_children[0].visits if sorted_children[0].visits > 0 else 0
+                second_best_win_rate = sorted_children[1].wins / sorted_children[1].visits if sorted_children[1].visits > 0 else 0
+                print(f"confidence margin {best_win_rate - second_best_win_rate}")
+                if (best_win_rate - second_best_win_rate) >= self.confidence_margin:
+                    print(f"Confidence threshold met after {self.iterations_run} iterations")
+                    break
 
         best_child = root.best_child(c_param=0)
         # Convert integer result back to Colour enum if needed
@@ -372,15 +385,23 @@ def get_available_moves(board: Board) -> list[Move]:
     return available_moves
 
 class MCTSAgent(AgentBase):
-    def __init__(self, colour: Colour, c_param: float = 0.5, time_limit: float = 10.3):
+    def __init__(self, colour: Colour, iterations: int = 20000, c_param: float = 0.5, time_limit: float = 5.0, max_moves: int = 30, confidence_margin: float = 0.05):
         super().__init__(colour)
+        self.iterations = iterations
         self.c_param = c_param
         self.time_limit = time_limit
+        self.confidence_margin = confidence_margin
+
+        self.max_moves = max_moves
+        self.time_used = 0
+        self.time_limit = 300
 
         self.fair_opens = [(0, 10), (1,2), (1, 8), (2,0)]
         self.swaps = [(0,10), (1,9), (1,10), (9,0), (9,1), (10,0)]
 
     def make_move(self, turn: int, board: Board, opp_move: Move | None):
+        if turn // 2 > self.max_moves - 5:
+            self.max_moves += 10
         # Clone the board to avoid side effects
         if turn == 1:
             # use dict of known fair first moves
@@ -391,7 +412,9 @@ class MCTSAgent(AgentBase):
             # swap if move is part of self.swaps or 2 <= x <= 8 
             if opp_move and (2 <= opp_move.x <= 8 or (opp_move.x, opp_move.y) in self.swaps):
                 return Move(-1, -1)
-
+        time_budget = (self.time_limit - self.time_used) / (self.max_moves - (turn // 2))
+        
+        start = time.time()
         board_clone = cloneBoard(board)
 
         # Handle opponent move (if any)
@@ -400,7 +423,9 @@ class MCTSAgent(AgentBase):
             board_clone.set_tile_colour(opp_move.x, opp_move.y, opp_colour)
 
         # Initialize MCTS
-        mcts = MCTS(c_param=self.c_param, time_limit=self.time_limit)
+        mcts = MCTS(iterations=self.iterations, c_param=self.c_param, time_limit=time_budget, confidence_margin=self.confidence_margin)
         best_move = mcts.search(initial_board=board_clone, player=self.colour)
         print(f"MCTS selected move at ({best_move.x}, {best_move.y})")
+        end = time.time()
+        self.time_used += end - start
         return Move(best_move.x, best_move.y)

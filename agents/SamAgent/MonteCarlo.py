@@ -249,6 +249,14 @@ class MCTS:
                 node.backpropagate(result)
 
             self.iterations_run += 1
+            if len(root.children) >= 2 and self.iterations_run % 1000 == 0:
+                # Get win rates of the top two moves
+                sorted_children = sorted(root.children, key=lambda c: c.wins / c.visits if c.visits > 0 else 0, reverse=True)
+                best_win_rate = sorted_children[0].wins / sorted_children[0].visits if sorted_children[0].visits > 0 else 0
+                second_best_win_rate = sorted_children[1].wins / sorted_children[1].visits if sorted_children[1].visits > 0 else 0
+                if (best_win_rate - second_best_win_rate) >= self.confidence_margin:
+                    print(f"Confidence threshold met after {i+1} iterations")
+                    break
 
         best_child = root.best_child(c_param=0)
          # Print stats for the best move

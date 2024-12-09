@@ -50,28 +50,10 @@ def board_from_1d(board_1d: np.ndarray, board_size) -> Board:
         new_board.set_tile_colour(x, y, colour)
     return new_board
 
-# Numba-Optimized get_available_moves_1d
-@njit
-def get_available_moves_1d_numba(board_1d, board_size):
-    """Generate available move indices from the 1D board using Numba."""
-    count = 0
-    total = board_size * board_size
-    for idx in range(total):
-        if board_1d[idx] == EMPTY:
-            count += 1
-    moves = np.empty(count, dtype=np.int32)
-    current = 0
-    for idx in range(total):
-        if board_1d[idx] == EMPTY:
-            moves[current] = idx
-            current += 1
-    return moves
-
-# Original get_available_moves_1d function now calls the Numba-optimized version
 def get_available_moves_1d(board_1d: np.ndarray, board_size):
     """Generate available moves from the 1D board."""
-    available_indices = get_available_moves_1d_numba(board_1d, board_size)
-    return available_indices
+    available_indices = np.where(board_1d == EMPTY)[0]
+    return [Move(idx // board_size, idx % board_size) for idx in available_indices]
 
 NEIGHBOUR_DISPLACEMENTS = np.array([
     [-1, 0], [-1, 1], [0, 1],
@@ -154,7 +136,7 @@ def simulate_random_playoff_numba(simulation_board, board_size, player):
 
     while True:
         # Find available moves
-        available_moves = get_available_moves_1d_numba(simulation_board, board_size)
+        available_moves = np.where(simulation_board == EMPTY)[0]
         if available_moves.size == 0:
             return 1 - current_player  # Opposite player as fallback
 
@@ -194,35 +176,6 @@ def simulate_random_playoff_numba(simulation_board, board_size, player):
         # Switch player
         current_player = 1 - current_player
 
-# Numba-Optimized Function to Select Best Child
-@njit
-def select_best_child_numba(parent_visits, child_visits, child_wins, c_param):
-    """
-    Selects the best child index based on the UCB1 formula.
-
-    Parameters:
-    - parent_visits (int): Number of visits to the parent node.
-    - child_visits (array): Array of visits for each child.
-    - child_wins (array): Array of wins for each child.
-    - c_param (float): Exploration parameter.
-
-    Returns:
-    - best_index (int): Index of the best child.
-    """
-    max_ucb1 = -1e10
-    best_index = -1
-    for i in range(child_visits.shape[0]):
-        if child_visits[i] == 0:
-            ucb1 = 1e10  # Represents infinity
-        else:
-            exploitation = child_wins[i] / child_visits[i]
-            exploration = c_param * sqrt((2 * log(parent_visits)) / child_visits[i])
-            ucb1 = exploitation + exploration
-        if ucb1 > max_ucb1:
-            max_ucb1 = ucb1
-            best_index = i
-    return best_index
-
 class TreeNode:
     def __init__(self, board_1d: np.ndarray, board_size: int, parent=None, move: Move = None, player: Colour = Colour.RED):
         self.board_1d = board_1d.copy()  # Ensure separate copy
@@ -238,32 +191,25 @@ class TreeNode:
         return len(self.children) == len(get_available_moves_1d(self.board_1d, self.board_size))
 
     def best_child(self, c_param):
-        """
-        Selects the best child node based on the UCB1 formula using a Numba-optimized function.
-        """
-        if self.visits == 0:
-            # Avoid division by zero and log(0) issues
-            return None
-
-        num_children = len(self.children)
-        child_visits = np.empty(num_children, dtype=np.int32)
-        child_wins = np.empty(num_children, dtype=np.float32)
-        for i, child in enumerate(self.children):
-            child_visits[i] = child.visits
-            child_wins[i] = child.wins
-
-        best_index = select_best_child_numba(self.visits, child_visits, child_wins, c_param)
-        if best_index == -1 or best_index >= num_children:
-            return None  # No valid children found
+        choices_weights = []
+        for child in self.children:
+            if child.visits == 0:
+                ucb1 = float('inf')
+            else:
+                exploitation = child.wins / child.visits
+                exploration = c_param * sqrt((2 * log(self.visits)) / child.visits)
+                ucb1 = exploitation + exploration
+            choices_weights.append(ucb1)
+        best_index = choices_weights.index(max(choices_weights))
         return self.children[best_index]
 
     def expand(self):
         tried_moves = set((child.move.x, child.move.y) for child in self.children)
-        available_indices = get_available_moves_1d(self.board_1d, self.board_size)
-        for idx in available_indices:
-            x, y = divmod(idx, self.board_size)
-            if (x, y) not in tried_moves:
+        possible_moves = get_available_moves_1d(self.board_1d, self.board_size)
+        for move in possible_moves:
+            if (move.x, move.y) not in tried_moves:
                 new_board_1d = self.board_1d.copy()
+                idx = move.x * self.board_size + move.y
                 new_board_1d[idx] = self.player
 
                 next_player_int = 1 - self.player  # Switch player
@@ -273,7 +219,7 @@ class TreeNode:
                     board_1d=new_board_1d,
                     board_size=self.board_size,
                     parent=self,
-                    move=Move(x, y),
+                    move=move,
                     player=next_player
                 )
 
@@ -294,7 +240,8 @@ class TreeNode:
             self.parent.backpropagate(result)
 
 class MCTS:
-    def __init__(self, c_param: float = 0.5, time_limit: float = 5.0):
+    def __init__(self, iterations: int = 20000, c_param: float = 0.5, time_limit: float = 5.0):
+        self.iterations = iterations
         self.c_param = c_param
         self.time_limit = time_limit
         self.iterations_run = 0
@@ -302,7 +249,6 @@ class MCTS:
         # Warm-up calls to compile Numba functions
         dummy_board = np.full(1, EMPTY, dtype=np.int32)
         simulate_random_playoff_numba(dummy_board.copy(), 1, RED)
-        select_best_child_numba(0, np.array([0], dtype=np.int32), np.array([0.0], dtype=np.float32), 0.5)
 
     def search(self, initial_board: Board, player: Colour):
         board_size = initial_board.size
@@ -310,7 +256,7 @@ class MCTS:
         root = TreeNode(board_1d=initial_board_1d, board_size=board_size, player=player)
         start_time = time.time()
 
-        while True:
+        for _ in range(self.iterations):
             current_time = time.time()
             elapsed_time = current_time - start_time
             if elapsed_time >= self.time_limit:
@@ -329,28 +275,14 @@ class MCTS:
 
         best_child = root.best_child(c_param=0)
         # Convert integer result back to Colour enum if needed
-        if best_child is not None and best_child.visits > 0:
-            selected_move = best_child.move
-            win_ratio = best_child.wins / best_child.visits
-            print(f"Selected Move ({selected_move.x}, {selected_move.y}) - Wins: {best_child.wins}, Visits: {best_child.visits}, Win Ratio: {win_ratio:.2f}")
-        else:
-            # Fallback if no best child found
-            available_moves = get_available_moves_1d(initial_board_1d, board_size)
-            if available_moves.size > 0:
-                move_idx = available_moves[0]
-                x, y = divmod(move_idx, board_size)
-                selected_move = Move(x, y)
-                print(f"No visits yet. Selecting first available move ({x}, {y})")
-            else:
-                selected_move = Move(-1, -1)  # No moves available
-                print("No available moves.")
+        selected_move = best_child.move
+        win_ratio = best_child.wins / best_child.visits if best_child.visits > 0 else 0
+        print(f"Selected Move ({selected_move.x}, {selected_move.y}) - Wins: {best_child.wins}, Visits: {best_child.visits}, Win Ratio: {win_ratio:.2f}")
         return selected_move
 
     def _select(self, node: TreeNode):
         while node.is_fully_expanded() and node.children:
             node = node.best_child(self.c_param)
-            if node is None:
-                break
         return node
 
     def check_terminal(self, node: TreeNode) -> bool:
@@ -372,8 +304,9 @@ def get_available_moves(board: Board) -> list[Move]:
     return available_moves
 
 class MCTSAgent(AgentBase):
-    def __init__(self, colour: Colour, c_param: float = 0.5, time_limit: float = 10.3):
+    def __init__(self, colour: Colour, iterations: int = 20000, c_param: float = 0.5, time_limit: float = 5.0):
         super().__init__(colour)
+        self.iterations = iterations
         self.c_param = c_param
         self.time_limit = time_limit
 
@@ -389,8 +322,9 @@ class MCTSAgent(AgentBase):
 
         elif turn == 2:
             # swap if move is part of self.swaps or 2 <= x <= 8 
-            if opp_move and (2 <= opp_move.x <= 8 or (opp_move.x, opp_move.y) in self.swaps):
+            if 2 <= opp_move.x <= 8 or (opp_move.x, opp_move.y) in self.swaps:
                 return Move(-1, -1)
+
 
         board_clone = cloneBoard(board)
 
@@ -400,7 +334,7 @@ class MCTSAgent(AgentBase):
             board_clone.set_tile_colour(opp_move.x, opp_move.y, opp_colour)
 
         # Initialize MCTS
-        mcts = MCTS(c_param=self.c_param, time_limit=self.time_limit)
+        mcts = MCTS(iterations=self.iterations, c_param=self.c_param, time_limit=self.time_limit)
         best_move = mcts.search(initial_board=board_clone, player=self.colour)
         print(f"MCTS selected move at ({best_move.x}, {best_move.y})")
         return Move(best_move.x, best_move.y)
